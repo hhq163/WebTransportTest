@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hhq163/WebTransportTest/client/impl"
+	"github.com/quic-go/quic-go"
 	webtransport "github.com/quic-go/webtransport-go"
 )
 
@@ -23,7 +24,15 @@ func main() {
 		NextProtos:         []string{"h3"},
 	}
 
-	dialer := &webtransport.Dialer{TLSClientConfig: tlsConfig}
+	dialer := &webtransport.Dialer{
+		TLSClientConfig: tlsConfig,
+		QUICConfig: &quic.Config{
+			EnableDatagrams:                  true,
+			EnableStreamResetPartialDelivery: true,
+			MaxIdleTimeout:                   6 * time.Second,
+			KeepAlivePeriod:                  2 * time.Second,
+		},
+	}
 	defer dialer.Close()
 
 	resp, session, err := dialer.Dial(context.Background(), "https://172.16.121.61:4433/wt", http.Header{
