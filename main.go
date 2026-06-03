@@ -15,6 +15,7 @@ import (
 )
 
 var globalStats impl.Stats
+var sessionMgr = impl.NewSessionManager()
 
 func main() {
 	cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
@@ -50,6 +51,14 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(globalStats.Snapshot())
 	})
+	// 访问方式：http://172.16.121.61:8082/sessions
+	statsMux.HandleFunc("/sessions", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"count":    sessionMgr.Count(),
+			"sessions": sessionMgr.Snapshot(),
+		})
+	})
 	go func() {
 		log.Println("Stats HTTP 服务启动在 :8082  →  http://172.16.121.61:8082/stats")
 		if err := http.ListenAndServe(":8082", statsMux); err != nil {
@@ -63,7 +72,13 @@ func main() {
 			log.Printf("升级失败: %v", err)
 			return
 		}
-		log.Printf("新会话建立")
+		remoteAddr := r.RemoteAddr
+		sessID := sessionMgr.Add(session, remoteAddr)
+		log.Printf("[%s] 新会话建立 remote=%s 当前活跃=%d", sessID, remoteAddr, sessionMgr.Count())
+		defer func() {
+			sessionMgr.Remove(sessID)
+			log.Printf("[%s] 会话已移除 当前活跃=%d", sessID, sessionMgr.Count())
+		}()
 		defer session.CloseWithError(0, "")
 
 		ctx, cancel := context.WithCancel(session.Context())
@@ -85,7 +100,7 @@ func main() {
 		go handleDatagrams(session, &globalStats)
 
 		<-session.Context().Done()
-		log.Printf("会话关闭 | 最终统计: %s", globalStats.String())
+		log.Printf("[%s] 会话关闭 | 最终统计: %s", sessID, globalStats.String())
 	})
 
 	log.Println("WebTransport 服务启动在 :4433")
