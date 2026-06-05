@@ -2,3 +2,4 @@ go.sum
 WebTransportTest
 WebTransportTest.exe
 client/client.exe
+wsclient/wsclient
