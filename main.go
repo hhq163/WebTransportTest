@@ -97,7 +97,7 @@ func main() {
 		}()
 
 		go handleStreams(session, &globalStats)
-		go handleDatagrams(session, &globalStats)
+		// go handleDatagrams(session, &globalStats)
 
 		<-session.Context().Done()
 		log.Printf("[%s] 会话关闭 | 最终统计: %s", sessID, globalStats.String())

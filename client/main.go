@@ -87,11 +87,11 @@ func main() {
 	go sendLoop(session, router, "game", 500*time.Millisecond, &globalStats)
 
 	// 数据报发送循环（无需流，适合不可靠实时数据）
-	go sendDatagramLoop(session, &globalStats)
+	// go sendDatagramLoop(session, &globalStats)
 
 	// 接收服务端主动推送的流
 	go receiveMessages(session, &globalStats)
-	go receiveDatagrams(session, &globalStats)
+	// go receiveDatagrams(session, &globalStats)
 
 	<-session.Context().Done()
 	log.Printf("连接断开 | 最终统计: %s", globalStats.String())
@@ -170,7 +170,7 @@ func receiveDatagrams(session *webtransport.Session, stats *impl.Stats) {
 			continue
 		}
 		rtt := impl.RTTMs(msg.SendTimeMs)
-		stats.MsgReceived.Add(1)
+		stats.RecordReceived()
 		stats.RecordRTT(rtt)
 		log.Printf("[datagram] 收到 type=%s RTT=%dms", msg.Type, rtt)
 	}
@@ -188,7 +188,7 @@ func handleStream(stream *webtransport.Stream, stats *impl.Stats) {
 			return
 		}
 		if n > 0 {
-			stats.MsgReceived.Add(1)
+			stats.RecordReceived()
 			log.Printf("[stream] 收到服务器推送: %s", string(buf[:n]))
 			stream.Write([]byte(`{"status":"ok"}`))
 		}

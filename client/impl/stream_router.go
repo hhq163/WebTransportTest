@@ -86,7 +86,7 @@ func (r *StreamRouter) Open(msgType string) error {
 				return
 			}
 			if n > 0 {
-				r.stats.MsgReceived.Add(1)
+				r.stats.RecordReceived()
 				resp := make([]byte, n)
 				copy(resp, buf[:n])
 				if r.handler != nil {
