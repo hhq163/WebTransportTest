@@ -3,20 +3,19 @@ package impl
 import (
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
-const milestoneCount = 10000
+// TotalSend 每次测试发送的总消息数
+var TotalSend int64 = 2000
 
 // Stats 与 WebTransport 客户端保持相同统计结构，便于横向对比
-// 所有时间在客户端本地计算，无跨机器时钟依赖
 type Stats struct {
-	// 连接 1（ping + chat）
 	Conn1Sent  atomic.Int64
 	Conn1Fail  atomic.Int64
 	Conn1Retry atomic.Int64
-	// 连接 2（game）
 	Conn2Sent  atomic.Int64
 	Conn2Fail  atomic.Int64
 	Conn2Retry atomic.Int64
@@ -28,12 +27,16 @@ type Stats struct {
 	RTTCount   atomic.Int64
 	RTTMaxMs   atomic.Int64
 
-	// P95 分桶（桶宽 10ms，覆盖 0~9990ms）
+	// P95 分桶（桶宽 10ms）
 	rttBuckets [1000]atomic.Int64
 
-	// 里程碑：第 milestoneCount 条消息到达时间
-	MilestoneTimeMs atomic.Int64
-	StartTimeMs     atomic.Int64
+	// 收到的序号集合
+	seqMu   sync.Mutex
+	recvSeq map[int64]struct{}
+}
+
+func NewStats() *Stats {
+	return &Stats{recvSeq: make(map[int64]struct{})}
 }
 
 func (s *Stats) RecordRTT(rttMs int64) {
@@ -82,57 +85,77 @@ func (s *Stats) AvgRTTMs() float64 {
 	return float64(s.RTTTotalMs.Load()) / float64(cnt)
 }
 
-func (s *Stats) RecordReceived() {
-	n := s.MsgReceived.Add(1)
-	if n == 1 {
-		s.StartTimeMs.CompareAndSwap(0, time.Now().UnixMilli())
-	}
-	if n == milestoneCount {
-		ts := time.Now().UnixMilli()
-		s.MilestoneTimeMs.Store(ts)
-		elapsed := ts - s.StartTimeMs.Load()
-		log.Printf("[milestone] 第 %d 条消息到达！耗时 %dms（%.1f 条/秒）",
-			milestoneCount, elapsed, float64(milestoneCount)/float64(elapsed)*1000)
-	}
+// RecordReceived 收到一条回包，seq 为消息全局序号
+func (s *Stats) RecordReceived(seq int64) {
+	s.MsgReceived.Add(1)
+	s.seqMu.Lock()
+	s.recvSeq[seq] = struct{}{}
+	s.seqMu.Unlock()
 }
 
-func (s *Stats) MilestoneSummary() string {
-	ts := s.MilestoneTimeMs.Load()
-	recv := s.MsgReceived.Load()
-	if ts == 0 {
-		return fmt.Sprintf("第%d条未达到（当前 recv=%d）", milestoneCount, recv)
+// ArrivalRate 返回到达率百分比
+func (s *Stats) ArrivalRate(totalSent int64) float64 {
+	if totalSent == 0 {
+		return 0
 	}
-	elapsed := ts - s.StartTimeMs.Load()
-	return fmt.Sprintf("第%d条耗时=%dms 吞吐=%.1f条/秒",
-		milestoneCount, elapsed, float64(milestoneCount)/float64(elapsed)*1000)
+	return float64(s.MsgReceived.Load()) / float64(totalSent) * 100
+}
+
+// MissingSeqs 返回未收到的序号（仅前 20 个）
+func (s *Stats) MissingSeqs(totalSent int64) []int64 {
+	s.seqMu.Lock()
+	defer s.seqMu.Unlock()
+	var missing []int64
+	for seq := int64(1); seq <= totalSent && len(missing) < 20; seq++ {
+		if _, ok := s.recvSeq[seq]; !ok {
+			missing = append(missing, seq)
+		}
+	}
+	return missing
+}
+
+func (s *Stats) TotalSent() int64 {
+	return s.Conn1Sent.Load() + s.Conn2Sent.Load()
 }
 
 func (s *Stats) String() string {
+	sent := s.TotalSent()
 	return fmt.Sprintf(
-		"[Conn1] sent=%d fail=%d retry=%d | [Conn2] sent=%d fail=%d retry=%d | recv=%d | RTT avg=%.1fms p95=%dms max=%dms | %s",
-		s.Conn1Sent.Load(), s.Conn1Fail.Load(), s.Conn1Retry.Load(),
-		s.Conn2Sent.Load(), s.Conn2Fail.Load(), s.Conn2Retry.Load(),
+		"[Conn1] sent=%d fail=%d | [Conn2] sent=%d fail=%d | recv=%d | 到达率=%.1f%% | RTT avg=%.1fms p95=%dms max=%dms",
+		s.Conn1Sent.Load(), s.Conn1Fail.Load(),
+		s.Conn2Sent.Load(), s.Conn2Fail.Load(),
 		s.MsgReceived.Load(),
+		s.ArrivalRate(sent),
 		s.AvgRTTMs(), s.P95RTTMs(), s.RTTMaxMs.Load(),
-		s.MilestoneSummary(),
 	)
 }
 
 func (s *Stats) Snapshot() map[string]any {
+	sent := s.TotalSent()
 	return map[string]any{
-		"conn1_sent":        s.Conn1Sent.Load(),
-		"conn1_fail":        s.Conn1Fail.Load(),
-		"conn1_retry":       s.Conn1Retry.Load(),
-		"conn2_sent":        s.Conn2Sent.Load(),
-		"conn2_fail":        s.Conn2Fail.Load(),
-		"conn2_retry":       s.Conn2Retry.Load(),
-		"msg_received":      s.MsgReceived.Load(),
-		"rtt_avg_ms":        int64(s.AvgRTTMs()),
-		"rtt_p95_ms":        s.P95RTTMs(),
-		"rtt_max_ms":        s.RTTMaxMs.Load(),
-		"rtt_sample_cnt":    s.RTTCount.Load(),
-		"milestone_time_ms": s.MilestoneTimeMs.Load(),
-		"start_time_ms":     s.StartTimeMs.Load(),
+		"conn1_sent":     s.Conn1Sent.Load(),
+		"conn1_fail":     s.Conn1Fail.Load(),
+		"conn2_sent":     s.Conn2Sent.Load(),
+		"conn2_fail":     s.Conn2Fail.Load(),
+		"msg_received":   s.MsgReceived.Load(),
+		"arrival_rate":   fmt.Sprintf("%.1f%%", s.ArrivalRate(sent)),
+		"rtt_avg_ms":     int64(s.AvgRTTMs()),
+		"rtt_p95_ms":     s.P95RTTMs(),
+		"rtt_max_ms":     s.RTTMaxMs.Load(),
+		"rtt_sample_cnt": s.RTTCount.Load(),
+	}
+}
+
+// FinalReport 打印最终测试报告
+func (s *Stats) FinalReport(totalSent int64) {
+	missing := s.MissingSeqs(totalSent)
+	log.Printf("=== 测试完成 ===")
+	log.Printf("发送总数=%d 收到=%d 到达率=%.1f%%",
+		totalSent, s.MsgReceived.Load(), s.ArrivalRate(totalSent))
+	log.Printf("RTT avg=%.1fms p95=%dms max=%dms",
+		s.AvgRTTMs(), s.P95RTTMs(), s.RTTMaxMs.Load())
+	if len(missing) > 0 {
+		log.Printf("未收到序号（前%d个）: %v", len(missing), missing)
 	}
 }
 

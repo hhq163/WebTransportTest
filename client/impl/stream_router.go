@@ -7,6 +7,7 @@ import (
 	"log"
 	"sync"
 
+	"github.com/hhq163/WebTransportTest/base"
 	webtransport "github.com/quic-go/webtransport-go"
 )
 
@@ -86,7 +87,6 @@ func (r *StreamRouter) Open(msgType string) error {
 				return
 			}
 			if n > 0 {
-				r.stats.RecordReceived()
 				resp := make([]byte, n)
 				copy(resp, buf[:n])
 				if r.handler != nil {
@@ -101,7 +101,7 @@ func (r *StreamRouter) Open(msgType string) error {
 }
 
 // Send 将消息路由到对应 msgType 的流，若流不存在则自动建立
-func (r *StreamRouter) Send(msg *Message) error {
+func (r *StreamRouter) Send(msg *base.Message) error {
 	if err := r.Open(msg.Type); err != nil {
 		return err
 	}

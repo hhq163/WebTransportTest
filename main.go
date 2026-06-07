@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/hhq163/WebTransportTest/base"
 	"github.com/hhq163/WebTransportTest/impl"
 	"github.com/quic-go/quic-go/http3"
 	webtransport "github.com/quic-go/webtransport-go"
@@ -141,7 +142,7 @@ func processStream(stream *webtransport.Stream, stats *impl.Stats) {
 		copy(raw, buf[:n])
 		stats.MsgReceived.Add(1)
 
-		var msg impl.Message
+		var msg base.Message
 		if err := json.Unmarshal(raw, &msg); err != nil {
 			log.Printf("[stream] 解析失败: %v, raw=%s", err, string(raw))
 			continue
@@ -174,10 +175,11 @@ func dispatchPing(stream *webtransport.Stream, raw []byte, stats *impl.Stats) {
 	}
 }
 
-func dispatchChat(stream *webtransport.Stream, msg impl.Message, stats *impl.Stats) {
-	log.Printf("[chat] 收到 text_len=%d", len(msg.Payload))
-	reply, _ := json.Marshal(impl.Message{
+func dispatchChat(stream *webtransport.Stream, msg base.Message, stats *impl.Stats) {
+	log.Printf("[chat] 收到 seq=%d", msg.Seq)
+	reply, _ := json.Marshal(base.Message{
 		Type:       "chat_ack",
+		Seq:        msg.Seq,
 		Payload:    msg.Payload,
 		SendTimeMs: msg.SendTimeMs,
 	})
@@ -186,10 +188,11 @@ func dispatchChat(stream *webtransport.Stream, msg impl.Message, stats *impl.Sta
 	}
 }
 
-func dispatchGame(stream *webtransport.Stream, msg impl.Message, stats *impl.Stats) {
-	log.Printf("[game] 收到")
-	reply, _ := json.Marshal(impl.Message{
+func dispatchGame(stream *webtransport.Stream, msg base.Message, stats *impl.Stats) {
+	log.Printf("[game] 收到 seq=%d", msg.Seq)
+	reply, _ := json.Marshal(base.Message{
 		Type:       "game_ack",
+		Seq:        msg.Seq,
 		Payload:    msg.Payload,
 		SendTimeMs: msg.SendTimeMs,
 	})
@@ -206,14 +209,14 @@ func handleDatagrams(session *webtransport.Session, stats *impl.Stats) {
 		}
 		stats.MsgReceived.Add(1)
 
-		var msg impl.Message
+		var msg base.Message
 		if err := json.Unmarshal(data, &msg); err != nil {
 			log.Printf("[datagram] 解析失败: %v", err)
 			continue
 		}
 		log.Printf("[datagram] 收到 type=%s len=%d", msg.Type, len(data))
 
-		reply, _ := json.Marshal(impl.Message{
+		reply, _ := json.Marshal(base.Message{
 			Type:       msg.Type + "_ack",
 			Payload:    msg.Payload,
 			SendTimeMs: msg.SendTimeMs,

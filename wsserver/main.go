@@ -9,14 +9,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/hhq163/WebTransportTest/base"
 )
-
-// Message 与 WebTransport 服务端保持相同结构
-type Message struct {
-	Type       string          `json:"type"`
-	Payload    json.RawMessage `json:"payload"`
-	SendTimeMs int64           `json:"send_time_ms"`
-}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -62,8 +56,8 @@ func main() {
 		})
 	})
 
-	log.Println("WsServer 启动在 :9001  /ws1=ping+chat  /ws2=game  /stats=统计")
-	if err := http.ListenAndServe(":9001", mux); err != nil {
+	log.Println("WsServer (WSS) 启动在 :9001  /ws1=ping+chat  /ws2=game  /stats=统计")
+	if err := http.ListenAndServeTLS(":9001", "cert.pem", "key.pem", mux); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -115,20 +109,15 @@ func handleConn(w http.ResponseWriter, r *http.Request, label string) {
 		}
 		totalReceived.Add(1)
 
-		var msg Message
+		var msg base.Message
 		if err := json.Unmarshal(raw, &msg); err != nil {
 			log.Printf("[%s] 解析失败: %v", label, err)
 			continue
 		}
-		log.Printf("[%s] 收到 type=%s", label, msg.Type)
+		log.Printf("[%s] 收到 type=%s seq=%d", label, msg.Type, msg.Seq)
 
-		// 回包保留 send_time_ms，客户端据此计算 RTT
-		reply, _ := json.Marshal(Message{
-			Type:       msg.Type + "_ack",
-			Payload:    msg.Payload,
-			SendTimeMs: msg.SendTimeMs,
-		})
-		if err := conn.WriteMessage(websocket.TextMessage, reply); err != nil {
+		// 直接回显原始消息，客户端通过 send_time_ms 算 RTT、seq 算到达率
+		if err := conn.WriteMessage(websocket.TextMessage, raw); err != nil {
 			log.Printf("[%s] 回包失败: %v", label, err)
 			totalFail.Add(1)
 			return
