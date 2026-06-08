@@ -35,9 +35,15 @@ QUIC数据报模式和UDP数据报的区别：QUIC数据报消息是加密过的
 | 3   | 5%  | 0ms      | 中等丢包         | RTT avg=0.9ms p95=5ms max=12ms 第2000条耗时=79898ms  | RTT avg=1.1ms p95=5ms max=4ms 第2000条耗时=79899ms |
 | 4   | 10% | 0ms     | 较重丢包（HOL 验证）| RTT avg=0.9ms p95=5ms max=19ms 第2000条耗时=79900ms  | RTT avg=1.2ms p95=5ms max=13ms 第2000条耗时=79898ms |
 | 5   | 20% | 0ms     | 极端丢包         | RTT avg=0.9ms p95=5ms max=13ms 第2000条耗时=79898ms | RTT avg=1.2ms p95=5ms max=9ms  第2000条耗时=79899ms| 
-| 6   | 0%  | 100ms   | 纯高延迟         | 0ms        | 0ms      |
-| 7   | 1%  | 100ms   | 典型移动弱网      | 0ms       | 0ms   |
-| 8   | 5%  | 100ms   | 核心场景         | 0ms       | 0ms   |
-| 9   | 10% | 100ms   | 恶劣弱网         | 0ms       | 0ms   |
-| 10  | 20% | 100ms   | 高延迟+中等丢包 | 0ms    | 0ms   |
 
+
+发送 2000 条 → 统计实际收到了多少条（到达率 = recv / sent）
+
+| 编号      | 丢包率 | 附加延迟 | 说明          |       双WSS   |       WebTransport    |
+| ----------- | ----------- | -----------     | ----------- | ----------- | ----------- |   
+| 1   | 20% | 0ms     | 较重丢包（HOL 验证）| 到达率=100.0%  RTT avg=414.3ms p95=1855ms max=9346ms | 到达率=99.8%  RTT avg=8.1ms p95=35ms max=86ms|
+| 2   | 25%  | 0ms      | 较重丢包         |  到达率=100.0%  RTT avg=2307.2ms p95=9415ms max=12577ms | 到达率=98.8%  RTT avg=10.7ms p95=35ms max=201ms |
+| 3   | 30% | 0ms     | 极端丢包         | 到达率=42.8%  RTT avg=8648.1ms p95=9995ms max=33912ms| 到达率=97.3%  RTT avg=12.9ms p95=45ms max=186ms| 
+| 4   | 35% | 0ms     | 极端丢包         | 到达率=61.5%  RTT avg=4071.2ms p95=9995ms max=34752ms|  到达率=95.3%  RTT avg=16.7ms p95=85ms max=232ms|
+| 5   |40% | 0ms     | 极端丢包         | 到达率=61.5%  RTT avg=1838.4ms p95=7215ms max=20715ms | 到达率=92.3%  RTT avg=18.7ms p95=85ms max=503ms |
+| 6   |50% | 0ms     | 极端丢包         | 到达率=40.2%  RTT avg=79330.3ms p95=9995ms max=159865ms | 到达率=79.0%  RTT avg=31.5ms p95=95ms max=1012ms | 

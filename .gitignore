@@ -4,3 +4,4 @@ WebTransportTest.exe
 client/client.exe
 wsclient/wsclient
 *.log
+wsclient/wsclient.exe

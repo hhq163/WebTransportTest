@@ -21,59 +21,13 @@ const (
 	msgText    = "But apart from our regular occupation how much are we alive? If you are interested only in your regular occupation, you are alive only to that extent."
 )
 
-// globalSeq 跨所有连接共享的全局消息序号
 var globalSeq atomic.Int64
-
-// maxSentSeq 记录实际发出的最大序号，用于 FinalReport 统计范围
 var maxSentSeq atomic.Int64
-
 var globalStats = impl.NewStats()
 
-// writerConn 通过单一 writer goroutine + channel 保证写安全
-type writerConn struct {
-	conn *websocket.Conn
-	ch   chan []byte
-}
-
 var wsDialer = &websocket.Dialer{
-	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-}
-
-func newWriterConn(c *websocket.Conn, ctx context.Context) *writerConn {
-	wc := &writerConn{conn: c, ch: make(chan []byte, 512)}
-	go wc.writeLoop(ctx)
-	return wc
-}
-
-func (wc *writerConn) writeLoop(ctx context.Context) {
-	for {
-		select {
-		case data, ok := <-wc.ch:
-			if !ok {
-				return
-			}
-			if err := wc.conn.WriteMessage(websocket.TextMessage, data); err != nil {
-				log.Printf("[writerConn] 写入失败: %v", err)
-				return
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// Send 阻塞投入发送队列，让发送速率随网络自然降速，不丢弃消息
-func (wc *writerConn) Send(data []byte, ctx context.Context) {
-	select {
-	case wc.ch <- data:
-	case <-ctx.Done():
-	}
-}
-
-func (wc *writerConn) ReadMessage() (int, []byte, error) { return wc.conn.ReadMessage() }
-func (wc *writerConn) Close() error                      { return wc.conn.Close() }
-func (wc *writerConn) SetPongHandler(h func(string) error) {
-	wc.conn.SetPongHandler(h)
+	TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
+	HandshakeTimeout: 10 * time.Second,
 }
 
 func initLogger() *os.File {
@@ -96,25 +50,42 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	onRecv := func(raw []byte) {
+		var msg base.Message
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			log.Printf("[recv] 解析失败: %v", err)
+			return
+		}
+		rtt := base.RTTMs(msg.SendTimeMs)
+		globalStats.RecordReceived(msg.Seq)
+		globalStats.RecordRTT(rtt)
+		log.Printf("[recv] seq=%d type=%s RTT=%dms", msg.Seq, msg.Type, rtt)
+	}
+
 	// 连接 1：负责 ping（100ms）+ chat（100ms）
 	dialStart := time.Now()
-	rawConn1, _, err := wsDialer.Dial(serverAddr+"/ws1", nil)
-	if err != nil {
-		log.Fatalf("[conn1] 连接失败: %v", err)
-	}
-	conn1 := newWriterConn(rawConn1, ctx)
-	defer conn1.Close()
-	log.Printf("[conn1] 连接建立成功 /ws1 耗时=%dms", time.Since(dialStart).Milliseconds())
+	conn1 := newReconnConn(ctx, "conn1",
+		func() (*websocket.Conn, error) {
+			c, _, err := wsDialer.Dial(serverAddr+"/ws1", nil)
+			if err == nil {
+				log.Printf("[conn1] 连接建立成功 耗时=%dms", time.Since(dialStart).Milliseconds())
+			}
+			return c, err
+		}, onRecv)
 
 	// 连接 2：负责 game（200ms）
 	dialStart = time.Now()
-	rawConn2, _, err := wsDialer.Dial(serverAddr+"/ws2", nil)
-	if err != nil {
-		log.Fatalf("[conn2] 连接失败: %v", err)
-	}
-	conn2 := newWriterConn(rawConn2, ctx)
-	defer conn2.Close()
-	log.Printf("[conn2] 连接建立成功 /ws2 耗时=%dms", time.Since(dialStart).Milliseconds())
+	conn2 := newReconnConn(ctx, "conn2",
+		func() (*websocket.Conn, error) {
+			c, _, err := wsDialer.Dial(serverAddr+"/ws2", nil)
+			if err == nil {
+				log.Printf("[conn2] 连接建立成功 耗时=%dms", time.Since(dialStart).Milliseconds())
+			}
+			return c, err
+		}, onRecv)
+
+	// 等首次连接建立（简单等待一个握手周期）
+	time.Sleep(500 * time.Millisecond)
 
 	// 定时打印统计
 	go func() {
@@ -130,10 +101,6 @@ func main() {
 		}
 	}()
 
-	go receiveLoop(ctx, conn1, "conn1", globalStats)
-	go receiveLoop(ctx, conn2, "conn2", globalStats)
-
-	// allSent 在所有 sendLoop 退出后关闭
 	allSent := make(chan struct{})
 	var sendersDone atomic.Int32
 	onSenderDone := func() {
@@ -142,12 +109,9 @@ func main() {
 		}
 	}
 
-	go sendLoop(ctx, conn1, "ping", 100*time.Millisecond,
-		&globalStats.Conn1Sent, onSenderDone)
-	go sendLoop(ctx, conn1, "chat", 100*time.Millisecond,
-		&globalStats.Conn1Sent, onSenderDone)
-	go sendLoop(ctx, conn2, "game", 200*time.Millisecond,
-		&globalStats.Conn2Sent, onSenderDone)
+	go sendLoop(ctx, conn1, "ping", 100*time.Millisecond, &globalStats.Conn1Sent, onSenderDone)
+	go sendLoop(ctx, conn1, "chat", 100*time.Millisecond, &globalStats.Conn1Sent, onSenderDone)
+	go sendLoop(ctx, conn2, "game", 200*time.Millisecond, &globalStats.Conn2Sent, onSenderDone)
 
 	<-allSent
 	totalSent := maxSentSeq.Load()
@@ -158,8 +122,7 @@ func main() {
 	os.Exit(0)
 }
 
-// sendLoop 发满 TotalSend 条后退出
-func sendLoop(ctx context.Context, conn *writerConn, msgType string, interval time.Duration,
+func sendLoop(ctx context.Context, conn *reconnConn, msgType string, interval time.Duration,
 	sent *atomic.Int64, done func()) {
 	defer done()
 	ticker := time.NewTicker(interval)
@@ -171,7 +134,6 @@ func sendLoop(ctx context.Context, conn *writerConn, msgType string, interval ti
 			if seq > impl.TotalSend {
 				return
 			}
-			// 记录实际发出的最大序号
 			for {
 				cur := maxSentSeq.Load()
 				if seq <= cur || maxSentSeq.CompareAndSwap(cur, seq) {
@@ -182,34 +144,11 @@ func sendLoop(ctx context.Context, conn *writerConn, msgType string, interval ti
 				fmt.Sprintf(`{"text":%q}`, msgText),
 			))
 			data, _ := json.Marshal(msg)
-			conn.Send(data, ctx)
+			conn.Send(data)
 			sent.Add(1)
 			log.Printf("[%s] 发送 seq=%d", msgType, seq)
 		case <-ctx.Done():
 			return
 		}
-	}
-}
-
-// receiveLoop 持续接收回包，解析 seq 和 RTT
-func receiveLoop(ctx context.Context, conn *writerConn, label string, stats *impl.Stats) {
-	conn.SetPongHandler(func(string) error { return nil })
-	for {
-		_, raw, err := conn.ReadMessage()
-		if err != nil {
-			if ctx.Err() == nil {
-				log.Printf("[%s] 读取失败: %v", label, err)
-			}
-			return
-		}
-		var msg base.Message
-		if err := json.Unmarshal(raw, &msg); err != nil {
-			log.Printf("[%s] 解析失败: %v", label, err)
-			continue
-		}
-		rtt := base.RTTMs(msg.SendTimeMs)
-		stats.RecordReceived(msg.Seq)
-		stats.RecordRTT(rtt)
-		log.Printf("[%s] 收到 seq=%d type=%s RTT=%dms", label, msg.Seq, msg.Type, rtt)
 	}
 }
