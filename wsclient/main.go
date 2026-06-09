@@ -22,7 +22,6 @@ const (
 )
 
 var globalSeq atomic.Int64
-var maxSentSeq atomic.Int64
 var globalStats = impl.NewStats()
 
 var wsDialer = &websocket.Dialer{
@@ -57,12 +56,12 @@ func main() {
 			return
 		}
 		rtt := base.RTTMs(msg.SendTimeMs)
-		globalStats.RecordReceived(msg.Seq)
 		globalStats.RecordRTT(rtt)
-		log.Printf("[recv] seq=%d type=%s RTT=%dms", msg.Seq, msg.Type, rtt)
+		globalStats.Received.Add(1)
+		log.Printf("[recv] type=%s seq=%d RTT=%dms", msg.Type, msg.Seq, rtt)
 	}
 
-	// 连接 1：负责 ping（100ms）+ chat（100ms）
+	// 连接 1：负责 chat（100ms）
 	dialStart := time.Now()
 	conn1 := newReconnConn(ctx, "conn1",
 		func() (*websocket.Conn, error) {
@@ -84,7 +83,7 @@ func main() {
 			return c, err
 		}, onRecv)
 
-	// 等首次连接建立（简单等待一个握手周期）
+	// 等首次连接建立
 	time.Sleep(500 * time.Millisecond)
 
 	// 定时打印统计
@@ -101,30 +100,31 @@ func main() {
 		}
 	}()
 
+	globalStats.Start()
+
 	allSent := make(chan struct{})
 	var sendersDone atomic.Int32
 	onSenderDone := func() {
-		if sendersDone.Add(1) == 3 {
+		if sendersDone.Add(1) == 2 {
 			close(allSent)
 		}
 	}
 
-	go sendLoop(ctx, conn1, "ping", 100*time.Millisecond, &globalStats.Conn1Sent, onSenderDone)
-	go sendLoop(ctx, conn1, "chat", 100*time.Millisecond, &globalStats.Conn1Sent, onSenderDone)
-	go sendLoop(ctx, conn2, "game", 200*time.Millisecond, &globalStats.Conn2Sent, onSenderDone)
+	go sendLoop(ctx, conn1, "chat", 10*time.Millisecond, onSenderDone)
+	go sendLoop(ctx, conn2, "game", 20*time.Millisecond, onSenderDone)
 
 	<-allSent
-	totalSent := maxSentSeq.Load()
-	log.Printf("全部 %d 条消息已发出，等待回包（5s grace period）...", totalSent)
+	globalStats.Stop()
+	log.Printf("全部消息已发出，等待回包（5s grace period）...")
 	time.Sleep(5 * time.Second)
 
-	globalStats.FinalReport(totalSent)
+	globalStats.FinalReport()
 	os.Exit(0)
 }
 
-func sendLoop(ctx context.Context, conn *reconnConn, msgType string, interval time.Duration,
-	sent *atomic.Int64, done func()) {
+func sendLoop(ctx context.Context, conn *reconnConn, msgType string, interval time.Duration, done func()) {
 	defer done()
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -134,18 +134,12 @@ func sendLoop(ctx context.Context, conn *reconnConn, msgType string, interval ti
 			if seq > impl.TotalSend {
 				return
 			}
-			for {
-				cur := maxSentSeq.Load()
-				if seq <= cur || maxSentSeq.CompareAndSwap(cur, seq) {
-					break
-				}
-			}
 			msg := base.NewMessage(msgType, seq, json.RawMessage(
 				fmt.Sprintf(`{"text":%q}`, msgText),
 			))
 			data, _ := json.Marshal(msg)
 			conn.Send(data)
-			sent.Add(1)
+			globalStats.Sent.Add(1)
 			log.Printf("[%s] 发送 seq=%d", msgType, seq)
 		case <-ctx.Done():
 			return

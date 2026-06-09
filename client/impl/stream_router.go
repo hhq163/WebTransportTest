@@ -68,7 +68,13 @@ func (r *StreamRouter) Open(msgType string) error {
 		defer stream.Close()
 		defer close(entry.done)
 		for data := range entry.send {
-			if err := WriteWithRetry(stream, data, r.stats, 3); err != nil {
+			// 解析消息以便使用 WriteMessage
+			var msg base.Message
+			if err := json.Unmarshal(data, &msg); err != nil {
+				log.Printf("[router:%s] 解析消息失败: %v", msgType, err)
+				continue
+			}
+			if err := base.WriteMessage(stream, &msg); err != nil {
 				log.Printf("[router:%s] 写入失败: %v", msgType, err)
 				return
 			}
@@ -77,21 +83,18 @@ func (r *StreamRouter) Open(msgType string) error {
 
 	// 读协程：持续接收该流上的响应
 	go func() {
-		buf := make([]byte, 65536)
 		for {
-			n, err := stream.Read(buf)
+			msg, err := base.ReadMessage(stream)
 			if err != nil {
 				if err != io.EOF {
 					log.Printf("[router:%s] 读取失败: %v", msgType, err)
 				}
 				return
 			}
-			if n > 0 {
-				resp := make([]byte, n)
-				copy(resp, buf[:n])
-				if r.handler != nil {
-					r.handler(msgType, resp, r.stats)
-				}
+			// 将消息序列化为字节传给 handler
+			resp, _ := json.Marshal(msg)
+			if r.handler != nil {
+				r.handler(msgType, resp, r.stats)
 			}
 		}
 	}()

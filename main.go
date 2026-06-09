@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -125,78 +124,66 @@ func handleStreams(session *webtransport.Session, stats *impl.Stats) {
 // processStream 持续读取同一条流上的消息，按 msg.Type 分派处理
 func processStream(stream *webtransport.Stream, stats *impl.Stats) {
 	defer stream.Close()
-	buf := make([]byte, 65536)
 	for {
-		n, err := stream.Read(buf)
+		// 使用 ReadMessage 读取带长度前缀的消息
+		msg, err := base.ReadMessage(stream)
 		if err != nil {
 			if err.Error() != "EOF" {
 				log.Printf("[stream] 读取失败: %v", err)
 			}
 			return
 		}
-		if n == 0 {
-			continue
-		}
 
-		raw := make([]byte, n)
-		copy(raw, buf[:n])
 		stats.MsgReceived.Add(1)
-
-		var msg base.Message
-		if err := json.Unmarshal(raw, &msg); err != nil {
-			log.Printf("[stream] 解析失败: %v, raw=%s", err, string(raw))
-			continue
-		}
 
 		delay := msg.OneWayDelayMs()
 		stats.RecordDelay(delay)
 
 		switch msg.Type {
 		case "ping":
-			dispatchPing(stream, raw, stats)
+			dispatchPing(stream, msg, stats)
 		case "chat":
 			dispatchChat(stream, msg, stats)
 		case "game":
 			dispatchGame(stream, msg, stats)
 		default:
 			log.Printf("[stream:%s] 收到", msg.Type)
-			response := bytes.ToUpper(raw)
-			if err := impl.WriteWithRetry(stream, response, stats, 3); err != nil {
+			if err := base.WriteMessage(stream, msg); err != nil {
 				log.Printf("[stream:%s] 回包失败: %v", msg.Type, err)
 			}
 		}
 	}
 }
 
-func dispatchPing(stream *webtransport.Stream, raw []byte, stats *impl.Stats) {
+func dispatchPing(stream *webtransport.Stream, msg *base.Message, stats *impl.Stats) {
 	log.Printf("[ping] 收到")
-	if err := impl.WriteWithRetry(stream, raw, stats, 3); err != nil {
+	if err := base.WriteMessage(stream, msg); err != nil {
 		log.Printf("[ping] 回包失败: %v", err)
 	}
 }
 
-func dispatchChat(stream *webtransport.Stream, msg base.Message, stats *impl.Stats) {
+func dispatchChat(stream *webtransport.Stream, msg *base.Message, stats *impl.Stats) {
 	log.Printf("[chat] 收到 seq=%d", msg.Seq)
-	reply, _ := json.Marshal(base.Message{
+	reply := &base.Message{
 		Type:       "chat_ack",
 		Seq:        msg.Seq,
 		Payload:    msg.Payload,
 		SendTimeMs: msg.SendTimeMs,
-	})
-	if err := impl.WriteWithRetry(stream, reply, stats, 3); err != nil {
+	}
+	if err := base.WriteMessage(stream, reply); err != nil {
 		log.Printf("[chat] 回包失败: %v", err)
 	}
 }
 
-func dispatchGame(stream *webtransport.Stream, msg base.Message, stats *impl.Stats) {
+func dispatchGame(stream *webtransport.Stream, msg *base.Message, stats *impl.Stats) {
 	log.Printf("[game] 收到 seq=%d", msg.Seq)
-	reply, _ := json.Marshal(base.Message{
+	reply := &base.Message{
 		Type:       "game_ack",
 		Seq:        msg.Seq,
 		Payload:    msg.Payload,
 		SendTimeMs: msg.SendTimeMs,
-	})
-	if err := impl.WriteWithRetry(stream, reply, stats, 3); err != nil {
+	}
+	if err := base.WriteMessage(stream, reply); err != nil {
 		log.Printf("[game] 回包失败: %v", err)
 	}
 }

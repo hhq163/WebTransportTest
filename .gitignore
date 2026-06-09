@@ -5,3 +5,7 @@ client/client.exe
 wsclient/wsclient
 *.log
 wsclient/wsclient.exe
+wt_client.exe
+wt_server.exe
+client/wt_client.exe
+wsclient/ws_client.exe
